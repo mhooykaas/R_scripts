@@ -1,0 +1,217 @@
+---
+title: "pileup log"
+author: "Marjolein Hooykaas"
+date: "4 July 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd('D:/surfdrive/LBA9402/assemblies/unicyclerAssemblyNormal') # where pictures will be saved into new folder Rlog-date.of.run; NB, an html report is saved where this script itself is located!!
+```
+
+# Contents of this log
+In this log file, sequencing read coverage statistics are shown (based on a long read and a short read pileup/depth input csv file). Additionally, graphs showing the read counts across the contigs have been saved, as well as some of the statistics (to text file summary.txt).
+
+```{r load libraries, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggsci)
+library(Biostrings)
+```
+```{r load data}
+path <- 'D:/surfdrive/LBA9402/assemblies/unicyclerAssemblyNormal/' # folder where csv files are located
+long_pileup <- 'pileup_unicycler_longQ10L5000_minimap2.csv' # long read pileup file; pileup file should consist of table with columns 1.contig, 2.position, 3.count
+short_pileup <- 'pileup_unicycler_illumina_bwa.csv ' # short read pileup file; pileup file should consist of table with columns 1.contig, 2.position, 3.count
+assembly_fasta <- 'D:/surfdrive/LBA9402/assemblies/unicyclerAssemblyNormal/assembly.fasta' # path to assembly (fasta format)
+```
+
+```{r print date, echo=FALSE}
+paste0("Run on: ", Sys.Date())
+```
+
+Make dataframes for long and short reads. Calculate short reads to long reads ratio's.
+```{r make initial dataframes, include=FALSE}
+long <- as.data.frame(read.csv(paste0(path,'/',long_pileup), header=FALSE)) #for csv change sep to ","
+colnames(long) <- c("contig","position","count")
+short <- as.data.frame(read.csv(paste0(path,'/',short_pileup), header=FALSE))
+colnames(short) <- c("contig","position","count")
+short <- short %>% mutate(short_count_to_long_count=short["count"][,]/long["count"][,]) #and calculate short to long read ratio's
+```
+Sort by contig size and add column with positions relative to entire genome sequence.
+```{r cumulative positions dataframes, echo=FALSE}
+# To be able to show a graph of read depth versus position in genome, across the entire genome (not just positions within contig), convert positions within contig to positions relative to entire genome sequence.
+# 1. Count the number of positions per contig = contig size, to make a table giving size per contig
+contigsize_df <- as.data.frame(long %>% group_by(contig) %>% count) # deduce contig size from the number of positions per contig in the pileup table (could also use the assembly fasta file). 
+# 2. Sort contigs by size (often already the case) 
+contigsize_df_sorted <- contigsize_df %>% arrange(desc(n)) 
+# 3. Then calculate cumulative sum of contig sizes
+contigsize_df_sorted["cum_size"] <- contigsize_df_sorted %>% select(n) %>% cumsum()
+# 4. These cumulative sizes should be added to the next contig. Eg, the size of contig 1 should be added to all contig 2 positions to obtain the 'global' position in genome. Sizes of contig 1+2 should be added to contig 3 positions etc. To obtain the shift (numbers to be added) for each contig, subtract size of current contig from the cumulative sizes.
+contigsize_df_sorted["to_add"] <- contigsize_df_sorted["cum_size"] - contigsize_df_sorted["n"]
+# For both long and short read tables:
+# 4. Merge this small shift table with the pileup table dataframes 
+# 5. Calculate 'global' positions: sum of original position + shift to be added 
+# 6. Just in case pileup table was not sorted from largest to smallest contig, sort by cumulative position
+long <- left_join(long,contigsize_df_sorted,by="contig") #4 merge by shared key "contig" 
+long["cum_position"] <- long["position"] + long["to_add"] #5
+long <- long %>% arrange(cum_position) # 6
+
+short <- left_join(short,contigsize_df_sorted,by="contig") #4
+short["cum_position"] <- short["position"] + short["to_add"] #5
+short <- short %>% arrange(cum_position) # 6
+```
+
+##Long reads pileup statistics
+```{r longpile, echo=TRUE}
+mediantableL <- long %>% group_by(contig) %>% summarise(median(count))
+mediantableL
+long %>% group_by(contig) %>% summarise(min(count))
+zerotableL <- long %>% group_by(contig) %>% filter(count==0)%>% count()
+zerotableL
+long %>% group_by(contig) %>% filter(count<4) %>% count()
+long[which(long$count==0),c(1,2,3,7)] %>% head(n=50)
+long[which(long$count>0 & long$count<4),c(1,2,3,7)] %>% head(n=50)
+write("Long reads",file = paste0(path,"/","summary.txt"),append=TRUE)
+write("median # reads",file = paste0(path,"/","summary.txt"),append=TRUE)
+write.table(mediantableL,file = paste0(path,"/","summary.txt"),append=TRUE,sep = "\t",row.names = FALSE)
+write("#positions with depth 0",file = paste0(path,"/","summary.txt"),append=TRUE)
+write.table(zerotableL,file = paste0(path,"/","summary.txt"),append=TRUE,sep = "\t",row.names = FALSE)   
+```
+##Short reads pileup statistics
+```{r shortpile, echo=TRUE}
+meantableS <- short %>% group_by(contig) %>% summarise(mean(count))
+meantableS
+short %>%group_by(contig) %>% summarise(min(count))
+zerotableS <- short %>% group_by(contig) %>% filter(count==0) %>% count()
+zerotableS
+short %>% group_by(contig) %>% filter(count<4) %>% count()
+short[which(short$count==0),c(1,2,3,7)] %>% head(n=50)
+short[which(short$count>0 & short$count<4),c(1,2,3,7)] %>% head(n=50)
+write("Short reads",file = paste0(path,"/","summary.txt"),append=TRUE)
+write("mean # reads",file = paste0(path,"/","summary.txt"),append=TRUE)
+write.table(meantableS,file = paste0(path,"/","summary.txt"),append=TRUE,sep = "\t",row.names = FALSE)
+write("#positions with depth 0",file = paste0(path,"/","summary.txt"),append=TRUE)
+write.table(zerotableS,file = paste0(path,"/","summary.txt"),append=TRUE,sep = "\t",row.names = FALSE)      
+```
+
+```{r stats short vs long reads}
+short %>% group_by(contig) %>% summarise(median(short_count_to_long_count))     # median short read to long read count ratio
+short %>% group_by(contig) %>% summarise(max(short_count_to_long_count))        # maximum short read to long read count ratio
+short %>% group_by(contig) %>% summarise(min(short_count_to_long_count))        # minimum short read to long read count ratio
+median_short_count_to_long_count <- median(short$short_count_to_long_count)
+median_short_count_to_long_count
+high_short <- median(short$short_count_to_long_count)*10
+low_short <- median(short$short_count_to_long_count)/5
+short[which(short$short_count_to_long_count>high_short),] %>% group_by(contig)%>% count() # number of positions with relatively high short read counts vs long read counts
+short[which(short$short_count_to_long_count<low_short),]  %>% group_by(contig)%>% count() # number of positions with relatively low short read counts vs long read counts
+```
+## Calculate GC contents of contigs
+```{r other stats}
+assembly = readDNAStringSet(assembly_fasta,format='fasta')
+GCdf = data.frame(contig=names(assembly),freq=letterFrequency(assembly,letters = "GC",as.prob = TRUE)*100)
+colnames(GCdf) <- c('contig','GC%')
+write.table(GCdf,file = paste0(path,"/","summary.txt"),append=TRUE,sep = "\t",row.names = FALSE)
+GCdf
+```
+
+## Plot read coverage, across entire genome
+Also save png files at indicated path (better formatted than the graphs below)
+```{r graphs whole assembly, echo=FALSE}
+newfolder <- paste0(path,"Rlog_",Sys.Date()) # where to save the graphs
+dir.create(newfolder) # create the new dir
+#longread graph
+plot <- ggplot(data=long, aes(cum_position, count, col=as.factor(contig))) + 
+  geom_point(size=1)+
+  ggtitle("long read pileup counts")+
+  scale_x_continuous(breaks = pretty(long$cum_position, n = 50))+
+  scale_y_continuous(breaks = pretty(long$count, n = 10))+
+  geom_vline(xintercept=unique(long$cum_size))+
+  scale_color_d3()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=90,vjust=0.4,hjust=0))
+png(file=paste0(newfolder,"/longread_count.png"), width = 3000, height = 750, res = 150)
+print(plot)
+dev.off()
+print(plot) # also plot this one in report for a quick overview (formatting not optimal)
+
+#shortread graph
+plot <- ggplot(data=short, aes(cum_position, count, col=as.factor(contig))) + 
+  geom_point(size=1)+
+  ggtitle("short read pileup counts")+
+  scale_x_continuous(breaks = pretty(short$cum_position, n = 50))+
+  scale_y_continuous(breaks = pretty(short$count, n = 10))+
+  geom_vline(xintercept=unique(short$cum_size))+
+  scale_color_d3()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=90,vjust=0.4,hjust=0))
+png(file=paste0(newfolder,"/shortread_count.png"), width = 3000, height = 750, res = 150)
+print(plot)
+dev.off()
+print(plot) # also plot this one in report for a quick overview (formatting not optimal)
+
+#ratio short to long
+plot <- ggplot(data=short, aes(cum_position, short_count_to_long_count, col=as.factor(contig))) + 
+  geom_point(size=1)+
+  ggtitle("ratio short reads to long reads pileup")+
+  scale_x_continuous(breaks = pretty(short$cum_position, n = 50))+
+  scale_y_continuous(breaks = pretty(short$count, n = 10))+
+  geom_vline(xintercept=unique(short$cum_size))+
+  scale_color_d3()+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=90,vjust=0.4,hjust=0))
+png(file=paste0(newfolder,"/short_to_longread_count.png"), width = 3000, height = 750, res = 150)
+print(plot)
+dev.off()
+print(plot) # also plot this one in report for a quick overview (foramtting not optimal)
+```
+
+## Plot read coverage per contig
+Save png files at indicated path
+```{r graphs per contig, echo=FALSE}
+contignames <- long$contig %>% unique()
+skip = 4 # number of contigs to skip (first n); keep at 0 to make graph of all contigs
+contignames <- tail(contignames,length(contignames)-skip)
+
+for (contigname in contignames){
+  data = filter(long,contig==contigname)
+  plot <- ggplot() + 
+    geom_point(data=data, aes(position,count),size=1,shape=20)+
+    ggtitle(paste0("contig ",contigname,": pileup count, long reads"))+
+    scale_x_continuous(breaks = pretty(data$position, n = 50))+
+    scale_y_continuous(breaks = pretty(data$count, n = 10))+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle=90,vjust=0.4,hjust=0))
+  png(file=paste0(newfolder,"/contig_",contigname,"_longread_count.png"), width = 3000, height = 750, res = 150)
+  print(plot)
+  dev.off()
+} 
+
+for (contigname in contignames){
+  data = filter(short,contig==contigname)
+  plot <- ggplot() + 
+    geom_point(data=data, aes(position,count), size=1,shape=20)+
+    ggtitle(paste0("contig ",contigname,": pileup count, short reads"))+
+    scale_x_continuous(breaks = pretty(data$position, n = 50))+
+    scale_y_continuous(breaks = pretty(data$count, n = 10))+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle=90,vjust=0.4,hjust=0))
+  png(file=paste0(newfolder,"/contig_",contigname,"_shortread_count.png"), width = 3000, height = 750, res = 150)
+  print(plot)
+  dev.off()
+} 
+
+for (contigname in contignames){
+  data = filter(short,contig==contigname)
+  plot <- ggplot() + 
+    geom_point(data=data, aes(position,short_count_to_long_count),size=1,shape=20)+
+    ggtitle(paste0("contig ",contigname,": short count to long count ratio"))+
+    scale_x_continuous(breaks = pretty(data$position, n = 50))+
+    scale_y_continuous(breaks = pretty(data$short_count_to_long_count, n = 10))+
+    theme_bw()+
+    theme(axis.text.x = element_text(angle=90,vjust=0.4,hjust=0))
+  png(file=paste0(newfolder,"/contig_",contigname,"_short_count_to_long_count.png"), width = 3000, height = 750, res = 150)
+  print(plot)
+  dev.off()
+} 
+```
